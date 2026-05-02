@@ -30,7 +30,7 @@ MAX_CONCURRENT = 2
 running_attacks = 0
 attack_slots = {} 
 
-# --- DATABASE ---
+# --- DATABASE HELPERS ---
 def load_data(file, default):
     if os.path.exists(file):
         try:
@@ -44,30 +44,37 @@ def save_data(file, data):
 users = load_data("users.json", {})
 keys = load_data("keys.json", {})
 
-# --- START COMMAND ---
-@bot.message_handler(commands=['start'])
-def start(message):
+# --- SYSTEM HELPERS ---
+def check_user(message):
     uid = str(message.from_user.id)
     if uid not in users:
         users[uid] = {"expiry": 0, "name": message.from_user.first_name}
         save_data("users.json", users)
+    return uid
+
+# --- START COMMAND ---
+@bot.message_handler(commands=['start'])
+def start(message):
+    uid = check_user(message)
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add("🚀 ATTACK", "📊 STATUS", "👤 PROFILE", "🎫 REDEEM")
     
+    status_rank = "ADMIN" if int(uid) == ADMIN_ID else "VIP" if users[uid]['expiry'] > time.time() else "FREE"
+    
     bot.send_message(message.chat.id, 
         f"🚀 **WELCOME TO SASTA DEVELOPER V3**\n\n"
         f"**Available Slots:** `{MAX_CONCURRENT - running_attacks}/{MAX_CONCURRENT}`\n"
-        f"**Your Rank:** `{'ADMIN' if int(uid) == ADMIN_ID else 'VIP' if users[uid]['expiry'] > time.time() else 'FREE'}`", 
+        f"**Your Rank:** `{status_rank}`", 
         reply_markup=markup)
 
 # --- ATTACK SYSTEM ---
 @bot.message_handler(func=lambda m: m.text == "🚀 ATTACK")
 def attack_req(message):
     global running_attacks
-    uid = str(message.from_user.id)
+    uid = check_user(message)
     
-    if users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
+    if users[uid]['expiry'] < time.time() and int(uid) != ADMIN_ID:
         bot.reply_to(message, "🚫 **Access Denied!** Please redeem a VIP key."); return
     
     if running_attacks >= MAX_CONCURRENT and int(uid) != ADMIN_ID:
@@ -116,27 +123,33 @@ def run_attack_logic(message):
     except:
         bot.reply_to(message, "❌ **Invalid Format!** Please use `IP PORT TIME`.")
 
-# --- REDEEM & ADMIN ALERTS ---
+# --- FIXED REDEEM SYSTEM ---
 @bot.message_handler(func=lambda m: m.text == "🎫 REDEEM")
 def redeem(message):
+    check_user(message)
     msg = bot.send_message(message.chat.id, "⌨️ **Enter your VIP Key:**")
     bot.register_next_step_handler(msg, process_redeem)
 
 def process_redeem(message):
     uid = str(message.from_user.id)
-    key = message.text.strip()
+    key = message.text.strip() # Remove extra spaces
+    
     if key in keys:
         duration = keys.pop(key)
-        users[uid]['expiry'] = max(users[uid].get('expiry', 0), time.time()) + duration
+        # Calculate new expiry
+        current_expiry = users[uid].get('expiry', 0)
+        base_time = max(current_expiry, time.time())
+        users[uid]['expiry'] = base_time + duration
+        
         save_data("users.json", users)
         save_data("keys.json", keys)
         
         # Admin Notification
         bot.send_message(ADMIN_ID, f"🔔 **KEY REDEEMED!**\n👤 **User:** `{message.from_user.first_name}`\n🆔 **ID:** `{uid}`\n🔑 **Key:** `{key}`\n⏳ **Added:** `{duration//86400} Days`")
         
-        bot.send_message(message.chat.id, "✅ **VIP ACTIVATED!** Enjoy your access.")
+        bot.send_message(message.chat.id, f"✅ **VIP ACTIVATED!**\n⏳ **New Expiry:** `{time.ctime(users[uid]['expiry'])}`")
     else:
-        bot.reply_to(message, "❌ **Invalid or Expired Key!**")
+        bot.reply_to(message, "❌ **Invalid or Expired Key!**\nCheck if you copied it correctly.")
 
 # --- ADMIN COMMANDS ---
 @bot.message_handler(commands=['genkey'])
@@ -169,8 +182,8 @@ def status(message):
 
 @bot.message_handler(func=lambda m: m.text == "👤 PROFILE")
 def profile(message):
-    uid = str(message.from_user.id)
-    rem = int(users.get(uid, {}).get('expiry', 0) - time.time())
+    uid = check_user(message)
+    rem = int(users[uid]['expiry'] - time.time())
     days = max(0, rem // 86400)
     bot.send_message(message.chat.id, f"👤 **Profile:** `{users[uid]['name']}`\n🆔 **ID:** `{uid}`\n⏳ **VIP Remaining:** `{days} Days`")
 
